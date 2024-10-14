@@ -23,13 +23,7 @@ namespace GameZone.Controllers
         public async Task<IActionResult> Add()
         {
             var model = new GameViewModel();
-            model.Genres = await context.Genres
-                .Select(g => new Genre
-                {
-                    Id = g.Id,
-                    Name = g.Name
-                })
-                .ToListAsync();
+            model.Genres = await GetGenres();
 
             return View(model);
         }
@@ -58,7 +52,7 @@ namespace GameZone.Controllers
                 Description = model.Description,
                 ReleasedOn = releasedOn,
                 GenreId = model.GenreId,
-                PublisherId = User.FindFirstValue(ClaimTypes.NameIdentifier)
+                PublisherId = GetCurrentUserId() ?? string.Empty
             };
 
             await context.Games.AddAsync(game);
@@ -89,61 +83,197 @@ namespace GameZone.Controllers
         [HttpGet]
         public async Task<IActionResult> Edit(int id)
         {
-            var model = new GameViewModel();
-            // Get the game from the database
+            var model = await context.Games
+                .Where(g => g.Id == id)
+                .AsNoTracking()
+                .Select(g => new GameViewModel
+                {
+                    Title = g.Title,
+                    ImageUrl = g.ImageUrl,
+                    Description = g.Description,
+                    ReleasedOn = g.ReleasedOn.ToString(ReleasedOnFormat),
+                    GenreId = g.GenreId
+                })
+                .FirstOrDefaultAsync();
 
-            return View();
+            model.Genres = await GetGenres();
+
+            return View(model);
         }
 
         [HttpPost]
-        public async Task<IActionResult> Edit(GameViewModel model)
+        public async Task<IActionResult> Edit(GameViewModel model, int id)
         {
             if (!ModelState.IsValid)
             {
                 return View(model);
             }
 
-            // Update the game in the database
+            DateTime releasedOn;
 
-            return RedirectToAction("Index", "Home");
+            if (!DateTime.TryParseExact(model.ReleasedOn, ReleasedOnFormat, CultureInfo.CurrentCulture, DateTimeStyles.None, out releasedOn))
+            {
+                ModelState.AddModelError(nameof(model.ReleasedOn), "Invalid date format.");
+
+                return View(model);
+            }
+
+            Game? game = await context.Games.FindAsync(id);
+
+            game.Title = model.Title;
+            game.ImageUrl = model.ImageUrl;
+            game.Description = model.Description;
+            game.ReleasedOn = releasedOn;
+            game.GenreId = model.GenreId;
+           
+
+            await context.SaveChangesAsync();
+
+            return RedirectToAction(nameof(All));
         }
 
         [HttpGet]
         public async Task<IActionResult> MyZone()
         {
-            return View(new List<GameInfoViewModel>());
-        }
+            string CurrentUserId = GetCurrentUserId() ?? string.Empty;
 
-        [HttpGet]
-        public async Task<IActionResult> AddToMyZone(int id)
-        {
-            // Add the game to the user's zone
+            var model = await context.Games
+                .Where(gg => gg.GamersGames.Any(g => g.GamerId == CurrentUserId))
+               .Select(g => new GameInfoViewModel
+               {
+                   Id = g.Id,
+                   Title = g.Title,
+                   ImageUrl = g.ImageUrl,
+                   Genre = g.Genre.Name,
+                   ReleasedOn = g.ReleasedOn.ToString(ReleasedOnFormat),
+                   Publisher = g.Publisher.UserName ?? string.Empty
+               })
+               .AsNoTracking()
+               .ToListAsync();
 
-            return View();
+            return View(model);
         }
 
         [HttpGet]
         public async Task<IActionResult> StrikeOut(int id)
         {
-            // Add the game to the user's zone
+            Game? game = await context.Games
+                .Where(g => g.Id == id)
+                .Include(g => g.GamersGames)
+                .FirstOrDefaultAsync();
 
-            return View();
+            if (game == null)
+            {
+                throw new ArgumentException("Invalid game");
+            }
+
+            string CurrentUserId = GetCurrentUserId() ?? string.Empty;
+
+            GamerGame? gamerGame = game.GamersGames.FirstOrDefault(g => g.GamerId == CurrentUserId);
+
+            if (gamerGame != null)
+            {
+                game.GamersGames.Remove(gamerGame);
+
+                await context.SaveChangesAsync();
+            }
+
+            return RedirectToAction(nameof(MyZone));
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> AddToMyZone(int id)
+        {
+            Game? game = await context.Games
+               .Where(g => g.Id == id)
+               .Include(g => g.GamersGames)
+               .FirstOrDefaultAsync();
+
+            if (game == null)
+            {
+                throw new ArgumentException("Invalid game");
+            }
+
+            string CurrentUserId = GetCurrentUserId() ?? string.Empty;
+
+            if (game.GamersGames.Any(g => g.GamerId == CurrentUserId))
+            {
+                return RedirectToAction(nameof(MyZone));
+            }
+
+            game.GamersGames.Add(new GamerGame()
+            {
+                GamerId = GetCurrentUserId() ?? string.Empty,
+                GameId = game.Id
+            });
+
+            await context.SaveChangesAsync();
+
+            return RedirectToAction(nameof(MyZone));
         }
 
         [HttpGet]
         public async Task<IActionResult> Details(int id)
         {
-            // Delete the game from the database
+            var model = await context.Games
+                .Where(g => g.Id == id)
+                .AsNoTracking()
+                .Select(g => new GameDetailsViewModel()
+                {
+                    Id = g.Id,
+                    Title = g.Title,
+                    ImageUrl = g.ImageUrl,
+                    Description = g.Description,
+                    ReleasedOn = g.ReleasedOn.ToString(ReleasedOnFormat),
+                    Genre = g.Genre.Name,
+                    Publisher = g.Publisher.UserName ?? string.Empty
+                })
+                .FirstOrDefaultAsync();
 
-            return View();
+            return View(model);
         }
 
         [HttpGet]
         public async Task<IActionResult> Delete(int id)
         {
-            // Delete the game from the database
+            var model = await context.Games
+                .Where(g => g.Id == id)
+                .Select(g => new DeleteViewModel()
+                {
+                    Id = g.Id,
+                    Title = g.Title,
+                    Publisher = g.Publisher.UserName ?? string.Empty
+                })
+                .FirstOrDefaultAsync();
 
-            return View();
+            return View(model);
+        }
+
+        [HttpPost]
+        public async Task<IActionResult> DeleteConfirmed(DeleteViewModel model)
+        {
+            Game? game = await context.Games
+                .Where(g => g.Id == model.Id)
+                .FirstOrDefaultAsync();
+
+            if (game != null)
+            {
+                context.Games.Remove(game);
+
+                await context.SaveChangesAsync();
+            }
+            return RedirectToAction(nameof(All));
+        }
+
+        private async Task<List<Genre>> GetGenres()
+        {
+            return await context.Genres
+                .ToListAsync();
+        }
+
+        private string? GetCurrentUserId()
+        {
+            return User.FindFirstValue(ClaimTypes.NameIdentifier);
         }
     }
 }
